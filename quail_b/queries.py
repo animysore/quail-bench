@@ -188,7 +188,8 @@ QUERY_FAMILY_WORKLOADS = {
 
 
 def queries(include_privacy: bool = False,
-            include_pending: bool = False) -> dict[str, QuerySpec]:
+            include_pending: bool = False,
+            include_samples: bool = False) -> dict[str, QuerySpec]:
     """Return the benchmark queries by id, in benchmark order.
 
     Args:
@@ -196,11 +197,20 @@ def queries(include_privacy: bool = False,
         include_pending: Also return queries whose reference labels are
             not published yet. They run only against a label collection
             that includes their predicates.
+        include_samples: Also return the bundled synthetic extraction queries.
     """
     regular, privacy, pending = _load_queries()
     specs = (regular + (privacy if include_privacy else ())
              + (pending if include_pending else ()))
-    return {spec.id: spec for spec in specs}
+    result = {spec.id: spec for spec in specs}
+    if include_samples:
+        from quail_b.extract_samples import query_specs
+
+        samples = query_specs()
+        if result.keys() & samples.keys():
+            raise ValueError("a sample query ID conflicts with a published query")
+        result.update(samples)
+    return result
 
 
 def pending_query_ids() -> tuple[str, ...]:
@@ -253,4 +263,4 @@ def query_family_name(ids):
 
 def get_query(query_id: str) -> QuerySpec:
     """Return one benchmark query definition by id, labels pending or not."""
-    return queries(include_pending=True)[query_id]
+    return queries(include_pending=True, include_samples=True)[query_id]

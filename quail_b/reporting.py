@@ -42,6 +42,12 @@ MEASUREMENT_SCHEMA = pa.schema([
     ("cost_usd", pa.float64()),
     ("cost_usd_per_million_input_tokens", pa.float64()),
     ("kv_regret_percent", pa.float64()),
+    ("extraction_fields_evaluated", pa.int64()),
+    ("extraction_fields_correct", pa.int64()),
+    ("extraction_errors", pa.int64()),
+    ("extraction_missing_documents", pa.int64()),
+    ("extraction_reference_field_recall", pa.float64()),
+    ("output_tokens", pa.int64()),
 ])
 
 
@@ -76,6 +82,14 @@ def measurement_rows(record) -> list[dict]:
         labels_evaluated: Classification answers compared to the labels.
             Null when the query has no classification or none was saved.
         labels_correct: Those classification answers that matched.
+        extraction_fields_evaluated: Observed non-NULL inputs times their fields.
+        extraction_fields_correct: Fields matching the exact reference.
+        extraction_errors: Observed generation errors, counted per projection.
+        extraction_missing_documents: Reference documents with no observed
+            extraction, counted per projection.
+        extraction_reference_field_recall: Correct fields on reference
+            survivors divided by all their non-NULL input fields.
+        output_tokens: Generated extraction tokens, separate from input work.
         predicted_rows: Distinct result rows the engine produced.
         expected_rows: Distinct result rows the labels require.
         matching_rows: Expected rows the engine also produced.
@@ -92,6 +106,7 @@ def measurement_rows(record) -> list[dict]:
         metrics = item["metrics"]
         answers = metrics["accuracy"]["answer_accuracy"] or {}
         labels = metrics["accuracy"].get("label_accuracy") or {}
+        extracts = metrics["accuracy"].get("extraction_accuracy") or {}
         output = metrics["accuracy"]["output_accuracy"]
         rows.append({
             "query": item["id"],
@@ -108,6 +123,13 @@ def measurement_rows(record) -> list[dict]:
             "answers_correct": answers.get("correct"),
             "labels_evaluated": labels.get("evaluated"),
             "labels_correct": labels.get("correct"),
+            "extraction_fields_evaluated": extracts.get("evaluated"),
+            "extraction_fields_correct": extracts.get("correct"),
+            "extraction_errors": extracts.get("error_documents"),
+            "extraction_missing_documents": extracts.get("missing_documents"),
+            "extraction_reference_field_recall": extracts.get(
+                "reference_field_recall"),
+            "output_tokens": metrics.get("output_tokens"),
             "predicted_rows": output["predicted_rows"],
             "expected_rows": output["expected_rows"],
             "matching_rows": output["matching_rows"],
@@ -178,6 +200,30 @@ def _write_report(directory, record):
             f"{_number(labels.get('accuracy'))} | "
             f"{_number(labels.get('evaluated'))} | "
             f"{_number(output.get('precision'))} | {_number(output.get('recall'))} |")
+    extraction_queries = [
+        item for item in record["queries"]
+        if "extraction_accuracy" in item.get("metrics", {}).get("accuracy", {})]
+    if extraction_queries:
+        lines.extend([
+            "", "## Extraction", "",
+            f"Suite: {record.get('benchmark_suite', 'custom')}", "",
+            f"Reference source: {record.get('reference_source', 'unspecified')}", "",
+            "Field agreement scores observed non-NULL inputs. A generation "
+            "error receives no correct fields. Reference field recall also "
+            "penalizes missing extractions. Counts repeat for each projection.", "",
+            "| Query | Field agreement | Reference field recall | Missing "
+            "documents | Generation errors | Output tokens |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for item in extraction_queries:
+            metrics = item["metrics"]
+            counts = metrics["accuracy"]["extraction_accuracy"]
+            lines.append(
+                f"| {item['id']} | {_number(counts['accuracy'])} | "
+                f"{_number(counts['reference_field_recall'])} | "
+                f"{_number(counts['missing_documents'])} | "
+                f"{_number(counts['error_documents'])} | "
+                f"{_number(metrics.get('output_tokens'))} |")
     lines.extend([
         "", "## Input rows and token counts", "",
         "| Query | Input rows by alias | Input tokens | Fresh tokens | "
@@ -243,7 +289,8 @@ def report(run_dir, *, rescore=True, cache_dir=None, root=None):
         try:
             query_directory = _query_directory(directory, item)
             output = _read_output(query_directory, item, rows=False)
-            if (output.filter_answers is None or output.join_answers is None
+            if (spec._info.extracts
+                    or output.filter_answers is None or output.join_answers is None
                     or (spec._info.classifies
                         and output.classify_answers is None)):
                 output = _read_output(query_directory, item)

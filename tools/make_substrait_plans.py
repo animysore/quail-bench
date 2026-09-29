@@ -49,6 +49,7 @@ from quail_b.prompts import (
 from quail_b.substrait import (
     AI_CLASSIFY_NAME,
     AI_EXTENSION_URN,
+    AI_EXTRACT_NAME,
     AI_FILTER_NAME,
     AI_JOIN_NAME,
     AND_NAME,
@@ -56,6 +57,7 @@ from quail_b.substrait import (
     COMPARISON_EXTENSION_URN,
     EQUAL_NAME,
     SUBSTRAIT_VERSION,
+    extract_type,
 )
 
 PLANS_DIR = Path(__file__).resolve().parents[1] / "quail_b" / "plans"
@@ -73,6 +75,7 @@ _FUNCTIONS = {
     EQUAL_NAME: (3, COMPARISON_EXTENSION_URN),
     AND_NAME: (4, BOOLEAN_EXTENSION_URN),
     AI_CLASSIFY_NAME: (5, AI_EXTENSION_URN),
+    AI_EXTRACT_NAME: (6, AI_EXTENSION_URN),
 }
 
 
@@ -91,6 +94,7 @@ class Scan:
     alias: str
     text: str
     columns: tuple[str, ...] = ()
+    nullable_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,15 @@ class Classify:
     labels: tuple[str, ...]
     output: str
     descriptions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Extract:
+    """Append named string fields and an error status to one input relation."""
+
+    input: Scan | Filter | Extract
+    fields: tuple[str, ...]
+    output: str
 
 
 @dataclass(frozen=True)
@@ -244,9 +257,20 @@ class _Emitter:
     """
 
     def __init__(self):
-        self.counts = {"filter": 0, "join": 0, "classify": 0,
+        self.counts = {"filter": 0, "join": 0, "classify": 0, "extract": 0,
                        "label-filter": 0}
         self.functions = set()
+        self.extracted_fields = {}
+
+    def output_names(self, fields, *, qualified=False):
+        names = []
+        for alias, column in fields:
+            names.append(f"{alias}.{column}" if qualified else (
+                alias if column == "id" else column))
+            if (alias, column) in self.extracted_fields:
+                names.extend((
+                    "response", *self.extracted_fields[alias, column], "error"))
+        return names
 
     def _operator_id(self, kind):
         self.counts[kind] += 1
@@ -256,12 +280,15 @@ class _Emitter:
         """Return (rel, fields, text columns by alias) for one tree."""
         if isinstance(node, Scan):
             names = ("id", node.text, *node.columns)
+            types = [_string_type() for _ in names]
+            if node.nullable_text:
+                types[1].string.nullability = type_pb2.Type.NULLABILITY_NULLABLE
             read = algebra.ReadRel(
                 common=_common(node.alias),
                 base_schema=type_pb2.NamedStruct(
                     names=names,
                     struct=type_pb2.Type.Struct(
-                        types=[_string_type() for _name in names],
+                        types=types,
                         nullability=type_pb2.Type.NULLABILITY_REQUIRED,
                     ),
                 ),
@@ -269,6 +296,25 @@ class _Emitter:
             )
             fields = tuple((node.alias, name) for name in names)
             return algebra.Rel(read=read), fields, {node.alias: node.text}
+
+        if isinstance(node, Extract):
+            rel, fields, text = self.emit(node.input)
+            (alias,) = text
+            self.functions.add(AI_EXTRACT_NAME)
+            self.extracted_fields[alias, node.output] = node.fields
+            common = _common(self._operator_id("extract"))
+            output_fields = (*fields, (alias, node.output))
+            common.hint.output_names.extend(
+                self.output_names(output_fields, qualified=True))
+            relation = algebra.ProjectRel(
+                common=common, input=rel, expressions=[_call(
+                    AI_EXTRACT_NAME, [
+                        _field(fields.index((alias, text[alias]))),
+                        _string_list(node.fields)],
+                    extract_type(node.fields))])
+            relation.expressions[0].scalar_function.arguments.add(
+                type=extract_type(node.fields))
+            return algebra.Rel(project=relation), output_fields, text
 
         if isinstance(node, Classify):
             rel, fields, text = self.emit(node.input)
@@ -366,7 +412,7 @@ def build_plan(tree, select=None) -> plan_pb2.Plan:
         tuple(name.split(".", 1)) if "." in name else (name, "id")
         for name in (list(text) if select is None else select)
     ]
-    names = [alias if column == "id" else column for alias, column in columns]
+    names = emitter.output_names(columns)
     expressions = [_field(fields.index(column)) for column in columns]
     project = algebra.Rel(
         project=algebra.ProjectRel(

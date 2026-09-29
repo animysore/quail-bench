@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 
 import pyarrow as pa
@@ -122,6 +122,7 @@ class GroundTruthCollection:
     scale_factor: float
     reference_model: str | None
     predicates: dict[str, PredicateLabels]
+    extracts: dict[str, pa.Table] = field(default_factory=dict)
 
     def __post_init__(self):
         templates = {}

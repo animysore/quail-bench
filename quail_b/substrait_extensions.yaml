@@ -44,3 +44,25 @@ scalar_functions:
             value: list<string>
             constant: true
         return: string
+  - name: ai_extract
+    description: >-
+      Extract the requested fields from one document using the exact
+      quail_b.rendering.render_extract_prompt instruction. Return a nullable
+      struct with response and error fields. A successful response is a
+      nullable struct containing one nullable string per requested field,
+      in field-list order; error is null. A failure has a null response
+      and a nonempty string error. A null document returns a null outer
+      struct without inference. The type argument and output_type must
+      both match this structure. RelRoot.names supplies nested field
+      names in depth-first order.
+    impls:
+      - args:
+          - name: document
+            value: string
+          - name: fields
+            value: list<string>
+            constant: true
+          - name: result_type
+            type: any1
+        nullability: DECLARED_OUTPUT
+        return: any1?

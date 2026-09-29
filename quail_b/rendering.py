@@ -9,6 +9,7 @@ depend on the query.
 
 from __future__ import annotations
 
+import json
 import re
 
 PROMPT_FORMAT = "raw-v1"
@@ -20,6 +21,23 @@ JOIN_ANCHOR_NOTE = "\n\n(The document above is DOCUMENT {}.)"
 JOIN_QUESTION_SEP = "\n\n"                 # anchor note -> question
 TASK_INSTRUCTION = "Evaluate TRUE or FALSE for the following question: "
 ANSWER_CUE = "\nANSWER:"
+
+
+def extract_template(fields: tuple[str, ...]) -> str:
+    """Return the versioned field-name extraction template."""
+    return (
+        "{0}\n\nExtract these fields from the document above: "
+        + json.dumps(fields, ensure_ascii=False)
+        + ". Return one JSON object with exactly these keys. "
+        "Each value must be a string copied from the document, or null "
+        "if the information is absent. Do not invent values. "
+        "Return only the JSON object.\nANSWER:"
+    )
+
+
+def render_extract_prompt(document: str, fields: tuple[str, ...]) -> str:
+    """Render one extraction prompt without interpreting braces in its fields."""
+    return SHARED_PRE + document + extract_template(fields)[3:]
 
 
 def _marker(placeholder: int) -> str:

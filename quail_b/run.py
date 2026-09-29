@@ -25,7 +25,7 @@ from quail_b.scoring import (
     output_columns,
     scores_from_answers,
 )
-from quail_b.substrait import _Classify, _Filter, _Join, _LabelFilter
+from quail_b.substrait import _Classify, _Extract, _Filter, _Join, _LabelFilter
 
 RUN_SCHEMA_VERSION = 2
 
@@ -63,6 +63,12 @@ def _query_hash(spec):
                 "id": operator.id,
                 "relation": operator.relation,
                 "prompt": operator.prompt,
+            })
+        elif isinstance(operator, _Extract):
+            operators.append({
+                "kind": "extract", "id": operator.id,
+                "relation": operator.relation, "fields": operator.fields,
+                "prompt": operator.prompt, "output": operator.output,
             })
         elif isinstance(operator, _Classify):
             operators.append({
@@ -132,9 +138,12 @@ def _save_output(directory, output, spec):
     }
     if output.classify_answers is not None:
         paths["classifications"] = None
+    if output.extract_answers is not None:
+        paths["extractions"] = None
     for kind, answers in (
             ("filters", output.filter_answers), ("joins", output.join_answers),
-            ("classifications", output.classify_answers)):
+            ("classifications", output.classify_answers),
+            ("extractions", output.extract_answers)):
         if answers is None:
             continue
         paths[kind] = []
@@ -160,6 +169,7 @@ def _read_output(directory, record, rows=True):
     filters = paths["filters"]
     joins = paths["joins"]
     classifications = paths.get("classifications")
+    extractions = paths.get("extractions")
     pieces = paths.get("prompt_pieces")
     return RunOutput(
         None if filters is None else {
@@ -172,7 +182,10 @@ def _read_output(directory, record, rows=True):
         None if pieces is None else json.loads(file(pieces).read_text()),
         None if classifications is None else {
             item["key"]: pq.read_table(file(item["path"]))
-            for item in classifications})
+            for item in classifications},
+        None if extractions is None else {
+            item["key"]: pq.read_table(file(item["path"]))
+            for item in extractions})
 
 
 ROW_SAMPLE = 100_000    # rows of a traced result checked one by one
@@ -207,6 +220,10 @@ def _validate_output(spec, output, tables):
             or not isinstance(output.runtime_s, (int, float))
             or not math.isfinite(output.runtime_s) or output.runtime_s < 0):
         raise ValueError("runtime_s must be a finite nonnegative number")
+    if spec._info.extracts:
+        from quail_b.extraction import validate_output
+
+        return validate_output(spec, output, tables)
     references = corpus_ids(spec, tables)
 
     def validate_ids(table, aliases):
@@ -320,6 +337,13 @@ def _score(spec, output, suite, gpu_count, gpu_hourly_rate_usd, tokens=None):
     metrics["input_tokens_per_second"] = (
         metrics["input_tokens"] / seconds
         if metrics["input_tokens"] is not None and seconds else None)
+    if spec._info.extracts:
+        generated = output.measurements.get("output_tokens")
+        if generated is not None and (
+                isinstance(generated, bool) or not isinstance(generated, int)
+                or generated < 0):
+            raise ValueError("output_tokens must be a nonnegative integer")
+        metrics["output_tokens"] = generated
     if gpu_hourly_rate_usd is not None:
         metrics["cost_usd"] = seconds / 3600 * gpu_count * gpu_hourly_rate_usd
     metrics["cost_usd_per_million_input_tokens"] = (
@@ -397,6 +421,9 @@ def run(run_query, *, queries=None, scale_factor=0.1, output_dir,
             {"id": spec.id, "definition_hash": _query_hash(spec),
              "status": "pending"} for spec in suite.queries],
     }
+    if suite.kind != "published":
+        record["benchmark_suite"] = suite.kind
+        record["reference_source"] = "hand-authored synthetic fixtures"
     directory.mkdir(parents=True, exist_ok=False)
     path = directory / "run.json"
     _write_json(path, record)

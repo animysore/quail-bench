@@ -25,7 +25,8 @@ def select_queries(only=None, *, scale_factor=0.1) -> tuple[QuerySpec, ...]:
     """Validate a scale factor and return the requested query definitions."""
     if scale_factor not in PUBLISHED_CORPORA:
         raise ValueError("scale factor must be 0.1, 0.5, or 1.0")
-    available = queries(include_pending=only is not None)
+    available = queries(
+        include_pending=only is not None, include_samples=only is not None)
     ids = list(queries()) if only is None else (
         [only] if isinstance(only, str) else list(only))
     unknown = set(ids) - available.keys()
@@ -47,6 +48,7 @@ class Benchmark:
     scale_factor: float
     corpus_id: str
     ground_truth: GroundTruthCollection | None
+    kind: str = "published"
 
 
 def load_benchmark(only=None, *, scale_factor=0.1, data_dir=None,
@@ -62,6 +64,12 @@ def load_benchmark(only=None, *, scale_factor=0.1, data_dir=None,
         root: Published data root, or None for the public S3 bucket.
     """
     specs = select_queries(only, scale_factor=scale_factor)
+    if any(spec._info.extracts for spec in specs):
+        from quail_b.extract_samples import load_samples
+
+        return load_samples(
+            specs, scale_factor=scale_factor, data_dir=data_dir,
+            collection_id=collection_id, accuracy=accuracy)
     corpus_id = PUBLISHED_CORPORA[scale_factor]
     manifest = _read_json(
         root, f"{GROUND_TRUTH_ROOT}/corpora/{corpus_id}/manifest.json")

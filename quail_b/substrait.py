@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from substrait import algebra_pb2, plan_pb2
+from substrait import algebra_pb2, plan_pb2, type_pb2
+
+from quail_b.rendering import extract_template
 
 SUBSTRAIT_VERSION = (0, 103, 0)
 AI_EXTENSION_URN = "extension:org.fsdatalab.quail_b:functions_ai"
@@ -14,6 +16,7 @@ BOOLEAN_EXTENSION_URN = "extension:io.substrait:functions_boolean"
 AI_FILTER_NAME = "ai_filter:str_str"
 AI_JOIN_NAME = "ai_join:str_str_str"
 AI_CLASSIFY_NAME = "ai_classify:str_str_list_list"
+AI_EXTRACT_NAME = "ai_extract:str_list_any"
 EQUAL_NAME = "equal:any_any"
 AND_NAME = "and:bool"
 
@@ -21,6 +24,7 @@ _FUNCTION_URNS = {
     AI_FILTER_NAME: AI_EXTENSION_URN,
     AI_JOIN_NAME: AI_EXTENSION_URN,
     AI_CLASSIFY_NAME: AI_EXTENSION_URN,
+    AI_EXTRACT_NAME: AI_EXTENSION_URN,
     EQUAL_NAME: COMPARISON_EXTENSION_URN,
     AND_NAME: BOOLEAN_EXTENSION_URN,
 }
@@ -79,7 +83,21 @@ class _LabelFilter:
     accepted: tuple[str, ...]
 
 
-type _Operator = _Filter | _Join | _Classify | _LabelFilter
+@dataclass(frozen=True)
+class _Extract:
+    """One field-name extraction that adds a response/error struct."""
+
+    id: str
+    relation: str
+    fields: tuple[str, ...]
+    output: str
+
+    @property
+    def prompt(self) -> str:
+        return extract_template(self.fields)
+
+
+type _Operator = _Filter | _Join | _Classify | _LabelFilter | _Extract
 
 
 @dataclass(frozen=True)
@@ -105,7 +123,7 @@ class _PlanInfo:
         )
 
     @property
-    def ai_operators(self) -> tuple[_Filter | _Join | _Classify, ...]:
+    def ai_operators(self) -> tuple[_Filter | _Join | _Classify | _Extract, ...]:
         """The operators that ask the model, each with its prompt."""
         return tuple(
             operator
@@ -128,6 +146,10 @@ class _PlanInfo:
             for operator in self.operators
             if isinstance(operator, _LabelFilter)
         )
+
+    @property
+    def extracts(self) -> tuple[_Extract, ...]:
+        return tuple(op for op in self.operators if isinstance(op, _Extract))
 
     def classify_output(self, output: str) -> _Classify:
         return next(
@@ -215,7 +237,7 @@ def _selected(
     expression: algebra_pb2.Expression,
 ) -> tuple[str, str]:
     index = _selection_index(expression)
-    if index >= len(fields):
+    if not 0 <= index < len(fields):
         raise ValueError(f"Substrait field index {index} is out of range")
     return fields[index]
 
@@ -239,14 +261,15 @@ def _literal_string(expression: algebra_pb2.Expression) -> str:
     return literal.string
 
 
-def _string_list(expression: algebra_pb2.Expression) -> tuple[str, ...]:
+def _string_list(expression: algebra_pb2.Expression,
+                 name: str = "ai_classify labels") -> tuple[str, ...]:
     if (not expression.HasField("literal")
             or expression.literal.WhichOneof("literal_type") != "list"):
-        raise ValueError("ai_classify labels must be a list literal")
+        raise ValueError(f"{name} must be a list literal")
     values = []
     for value in expression.literal.list.values:
         if value.WhichOneof("literal_type") != "string":
-            raise ValueError("ai_classify labels must be strings")
+            raise ValueError(f"{name} must be strings")
         values.append(value.string)
     return tuple(values)
 
@@ -302,6 +325,11 @@ def _decode(
         return _Decoded(fields, ((alias, read.named_table.names[-1]),), (), ())
 
     if kind == "project":
+        expressions = rel.project.expressions
+        if len(expressions) == 1 and functions.get(
+                expressions[0].scalar_function.function_reference
+        ) == AI_EXTRACT_NAME:
+            return _decode_extract(rel.project, functions)
         return _decode_classify(rel.project, functions)
 
     if kind == "filter" and rel.filter.condition.HasField("singular_or_list"):
@@ -448,6 +476,69 @@ def _decode_classify(project: algebra_pb2.ProjectRel,
     )
 
 
+def extract_type(fields) -> type_pb2.Type:
+    """Return the nullable response/error type of a field-name extraction."""
+    nullable = type_pb2.Type.NULLABILITY_NULLABLE
+    string = type_pb2.Type(
+        string=type_pb2.Type.String(nullability=nullable))
+    response = type_pb2.Type(struct=type_pb2.Type.Struct(
+        types=[string for _ in fields], nullability=nullable))
+    return type_pb2.Type(struct=type_pb2.Type.Struct(
+        types=[response, string], nullability=nullable))
+
+
+def _output_names(fields, operators, *, qualified=False) -> tuple[str, ...]:
+    """Name selected fields depth first, including nested extraction structs."""
+    extracts = {(op.relation, op.output): op.fields for op in operators
+                if isinstance(op, _Extract)}
+    names = []
+    for alias, column in fields:
+        names.append(f"{alias}.{column}" if qualified else (
+            alias if column == "id" else column))
+        if (alias, column) in extracts:
+            names.extend(("response", *extracts[alias, column], "error"))
+    return tuple(names)
+
+
+def _decode_extract(project, functions) -> _Decoded:
+    child = _decode(project.input, functions)
+    if project.common.HasField("emit"):
+        raise ValueError("an extract ProjectRel adds exactly one column")
+    expression = project.expressions[0]
+    call = expression.scalar_function
+    if (len(call.arguments) != 3
+            or not all(arg.HasField("value") for arg in call.arguments[:2])
+            or not call.arguments[2].HasField("type")):
+        raise ValueError("ai_extract needs a document, fields, and result type")
+    arguments = [arg.value for arg in call.arguments[:2]]
+    field = _selected(child.fields, arguments[0])
+    names = _string_list(arguments[1], "ai_extract fields")
+    if not names or any(not name.strip() for name in names):
+        raise ValueError("ai_extract needs nonempty field names")
+    if len(set(names)) != len(names):
+        raise ValueError("ai_extract field names must be distinct")
+    if (call.output_type != extract_type(names)
+            or call.arguments[2].type != extract_type(names)):
+        raise ValueError("ai_extract has an invalid response/error output type")
+    hints = tuple(project.common.hint.output_names)
+    previous = _output_names(child.fields, child.operators, qualified=True)
+    if len(hints) != len(previous) + len(names) + 3 or (
+            hints[:len(previous)] != previous):
+        raise ValueError("an extract ProjectRel must name every nested field")
+    alias, _, output = hints[len(previous)].partition(".")
+    if alias != field[0] or not output or "." in output:
+        raise ValueError("an extract column must belong to its document relation")
+    if output == "id" or (alias, output) in child.fields:
+        raise ValueError(f"extract column {output!r} is already a field")
+    if hints[len(previous) + 1:] != ("response", *names, "error"):
+        raise ValueError("ai_extract field names do not match its output")
+    operator = _Extract(project.common.hint.alias, alias, names, output)
+    return _Decoded(
+        (*child.fields, (alias, output)), child.tables,
+        _with_text_column(child.text_columns, field),
+        (*child.operators, operator))
+
+
 def _field_alias(name: str) -> str:
     alias, separator, column = name.partition(".")
     if not separator or not alias or not column or "." in column:
@@ -485,9 +576,10 @@ def _validate_info(info: _PlanInfo) -> None:
             raise ValueError(
                 f"filter {operator.id!r} must precede joins on its relation"
             )
-    outputs = [operator.output for operator in info.classifies]
+    generated = (*info.classifies, *info.extracts)
+    outputs = [operator.output for operator in generated]
     if len(set(outputs)) != len(outputs) or set(outputs) & set(aliases):
-        raise ValueError("label column names must be distinct from each "
+        raise ValueError("generated column names must be distinct from each "
                          "other and from relation aliases")
     selected = {_field_alias(name) for name in info.select}
     if not selected or not selected <= set(aliases):
@@ -501,15 +593,26 @@ def _validate_info(info: _PlanInfo) -> None:
         alias, column = name.split(".", 1)
         if column != "id" and not any(
                 (operator.relation, operator.output) == (alias, column)
-                for operator in info.classifies):
+                for operator in generated):
             raise ValueError(f"QUAIL-B projection selects {name!r}; only ids "
-                             "and label columns can be selected")
+                             "and generated columns can be selected")
     used = {operator.output for operator in info.label_filters}
     used.update(name.split(".", 1)[1] for name in info.select)
-    for operator in info.classifies:
+    for operator in generated:
         if operator.output not in used:
             raise ValueError(
                 f"label column {operator.output!r} is never used")
+    if info.extracts:
+        if len(set(info.select)) != len(info.select):
+            raise ValueError("an extraction projection cannot repeat a column")
+        if len(info.relations) != 1 or info.classifies:
+            raise ValueError("extraction queries use one table without classify")
+        extracting = False
+        for operator in info.operators:
+            if isinstance(operator, _Extract):
+                extracting = True
+            elif extracting:
+                raise ValueError("all filters must precede extraction")
 
 
 def _inspect_plan(plan: plan_pb2.Plan) -> _PlanInfo:
@@ -540,9 +643,8 @@ def _inspect_plan(plan: plan_pb2.Plan) -> _PlanInfo:
     )
     if tuple(project.common.emit.output_mapping) != expected_mapping:
         raise ValueError("QUAIL-B ProjectRel has an invalid output mapping")
-    expected_names = tuple(
-        alias if column == "id" else column
-        for alias, column in (name.split(".", 1) for name in select))
+    expected_names = _output_names(
+        (name.split(".", 1) for name in select), decoded.operators)
     if tuple(root.names) != expected_names:
         raise ValueError("QUAIL-B root names do not match selected relations")
     text_columns = dict(decoded.text_columns)

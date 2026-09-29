@@ -4,6 +4,11 @@ QUAIL-B is a benchmark for AI functions in SQL, or AI-SQL. It is actively being
 developed. **The queries use AI-powered filters, joins, and classification;
 we will expand to AI-powered extract, map, and groupby.**
 
+The fork also includes an opt-in [extraction sample suite](docs/extraction.md):
+three field-name-only queries with bundled synthetic inputs and hand-authored
+references. It runs offline at scale factor 1.0 and is separate from the
+41 published queries and their performance results.
+
 For example, query IMDB-4 finds the movie aspects that each review discusses,
 for reviews that praise the movie and discuss its ending:
 

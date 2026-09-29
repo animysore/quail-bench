@@ -31,8 +31,8 @@ class RunOutput:
             evaluated tuple.
         rows: The final rows: one ID column per selected alias, named by
             the alias, and one string column per selected label column,
-            named by the query. None when a saved run is rescored from
-            its answers alone.
+            or a response/error struct per extraction, named by the query.
+            None when a saved non-extraction run is rescored from answers alone.
         runtime_s: Completed query execution time, excluding result collection.
         measurements: Engine-reported numbers:
 
@@ -52,6 +52,11 @@ class RunOutput:
             relation's alias column and a string `label` column, one row
             per document the engine classified. A document with no row
             cannot pass a label filter or appear with its label.
+        extract_answers: Optional extract operator ID to a table with its
+            relation alias ID and named response/error output column.
+            Include NULL input rows as NULL outer structs. Operators without
+            a table use saved result rows. A supplied table must exactly
+            match its result columns.
     """
 
     filter_answers: dict[str, pa.Table] | None
@@ -61,6 +66,7 @@ class RunOutput:
     measurements: dict = field(default_factory=dict)
     prompt_pieces: dict | None = None
     classify_answers: dict[str, pa.Table] | None = None
+    extract_answers: dict[str, pa.Table] | None = None
 
 
 def output_columns(spec: QuerySpec) -> list[str]:
@@ -485,6 +491,8 @@ def scores_from_answers(spec: QuerySpec, output: RunOutput, corpus_rows):
     That needs every answer the query produces, and the selected columns
     must hold every joined alias, so that a row is a join tuple.
     """
+    if spec._info.extracts:
+        return None
     answers = answer_relations(
         spec, output.filter_answers, output.join_answers, corpus_rows,
         output.classify_answers)
@@ -576,6 +584,10 @@ def expected_survivors(spec: QuerySpec, ground_truth, corpus_rows
 
 def expected_rows(spec: QuerySpec, ground_truth, corpus_rows) -> pa.Table:
     """Return the final rows the labels say the query should return."""
+    if spec._info.extracts:
+        from quail_b.extraction import expected_rows as extraction_rows
+
+        return extraction_rows(spec, ground_truth, corpus_rows)
     survivors = expected_survivors(spec, ground_truth, corpus_rows)
     relations = []
     for join in spec._info.joins:
@@ -786,6 +798,10 @@ def row_counts(spec: QuerySpec, output: RunOutput, ground_truth,
 
 
 def evaluate(spec: QuerySpec, output: RunOutput, ground_truth, corpus_rows) -> dict:
+    if spec._info.extracts:
+        from quail_b.extraction import evaluate as extraction_evaluate
+
+        return extraction_evaluate(spec, output, ground_truth, corpus_rows)
     per_predicate = []
     total = BinaryCounts()
     filters = {

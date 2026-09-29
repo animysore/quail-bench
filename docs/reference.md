@@ -15,6 +15,7 @@ running the benchmark, the queries, and the results.
 - [Metric requirements](#metric-requirements)
 - [Metric definitions](#metric-definitions)
 - [Run records and rescoring](#run-records-and-rescoring)
+- [Extraction samples](#extraction-samples)
 
 ## Adapter function
 
@@ -128,6 +129,11 @@ the labels.
 | `measurements` | `dict` | Optional engine measurements |
 | `prompt_pieces` | `dict \| None` | Token and KV metrics |
 | `classify_answers` | `dict[str, pa.Table] \| None` | Label accuracy |
+| `extract_answers` | `dict[str, pa.Table] \| None` | Optional extraction traces |
+
+Extraction queries add nullable response/error struct columns to `rows`.
+See [Extraction](extraction.md#adapter-output-and-scoring) for their schema,
+optional answer tables, NULL handling and coverage checks.
 
 ### Result rows
 
@@ -371,15 +377,20 @@ minimum tokens, recomputed tokens, and KV regret.
 | Join throughput | Answer tables for every join, or a reported pair count |
 | Predicate-level accuracy | Predicate answers |
 | Label accuracy | Classification answers |
+| Extraction field agreement, reference field recall and coverage | Extraction result rows; optional matching extraction answer tables |
+| Generated extraction tokens | Nonnegative integer `measurements["output_tokens"]` |
 | Fresh tokens | `measurements["fresh_tokens"]` |
 | Input tokens and their throughput | Prompt pieces, or reported input tokens |
-| Minimum tokens and KV regret | All answer tables, prompt pieces, and fresh tokens; not yet defined for classification queries |
+| Minimum tokens and KV regret | All answer tables, prompt pieces, and fresh tokens; not yet defined for classification or extraction queries |
 | GPU cost | `gpu_count` and `gpu_hourly_rate_usd` |
 | Cost per million input tokens | GPU cost and a positive input token count |
 
 A metric that lacks its data is `unavailable` in `report.md` and null in
 `run.json` and `measurements.parquet`. QUAIL-B never reports a missing count as
 zero.
+
+The extraction metrics distinguish missing documents, generation errors and
+successful NULL fields; see [their definitions](extraction.md#adapter-output-and-scoring).
 
 ## Metric definitions
 
@@ -450,3 +461,10 @@ in place.
 reference collection. It requires corpus and query hashes that match the
 installed QUAIL-B, and it rewrites `run.json`, `report.md`, and
 `measurements.parquet`.
+
+## Extraction samples
+
+The fork's field-name extraction contract, synthetic queries, exact prompt,
+response/error types and scoring rules are described in
+[Field-name extraction samples](extraction.md). The suite is opt-in and does
+not change published query or corpus identities.

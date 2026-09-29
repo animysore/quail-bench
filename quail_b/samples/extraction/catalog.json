@@ -1,0 +1,14 @@
+[
+  {
+    "id": "EXTRACT-1",
+    "description": "Synthetic invoices: extract vendor and total"
+  },
+  {
+    "id": "EXTRACT-2",
+    "description": "Synthetic invoices: filter invoices, then extract fields"
+  },
+  {
+    "id": "EXTRACT-3",
+    "description": "Synthetic reviews: extract movie title and rating"
+  }
+]

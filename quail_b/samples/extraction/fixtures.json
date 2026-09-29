@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "source": "Hand-authored synthetic correctness fixtures, not published academic data.",
+  "tables": {
+    "extract_invoices": {
+      "fields": ["vendor", "total"],
+      "rows": [
+        {"id": "I-101", "body": "Invoice I-101. Vendor: Acme. Total: $125.50.", "response": {"vendor": "Acme", "total": "$125.50"}, "is_invoice": true},
+        {"id": "I-102", "body": "Invoice I-102. Vendor: Northwind. Total: EUR 48.00.", "response": {"vendor": "Northwind", "total": "EUR 48.00"}, "is_invoice": true},
+        {"id": "I-103", "body": "Invoice I-103. Vendor: Blue River. Total: $9.99.", "response": {"vendor": "Blue River", "total": "$9.99"}, "is_invoice": true},
+        {"id": "I-104", "body": "Invoice I-104. Vendor: Contoso. Total: GBP 70.", "response": {"vendor": "Contoso", "total": "GBP 70"}, "is_invoice": true},
+        {"id": "I-105", "body": "Invoice I-105. Vendor: Sakura. The total is not stated.", "response": {"vendor": "Sakura", "total": null}, "is_invoice": true},
+        {"id": "I-106", "body": "Invoice I-106. Total: $18.00. The vendor is not stated.", "response": {"vendor": null, "total": "$18.00"}, "is_invoice": true},
+        {"id": "not-invoice", "body": "This paragraph describes a sunny afternoon in the park.", "response": {"vendor": null, "total": null}, "is_invoice": false},
+        {"id": "null-invoice", "body": null, "response": null, "is_invoice": false}
+      ]
+    },
+    "extract_reviews": {
+      "fields": ["movie_title", "rating"],
+      "rows": [
+        {"id": "review-arrival", "body": "Movie title: Arrival\nRating: 4/5", "response": {"movie_title": "Arrival", "rating": "4/5"}},
+        {"id": "review-dune", "body": "Movie title: Dune\nNo rating was provided.", "response": {"movie_title": "Dune", "rating": null}},
+        {"id": "null-review", "body": null, "response": null}
+      ]
+    }
+  }
+}

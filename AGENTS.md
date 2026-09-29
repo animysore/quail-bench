@@ -24,7 +24,9 @@ Read `README.md` for the public benchmark contract and metric definitions.
   and input tables, then returns a `RunOutput`.
 - Do not add engine runtime code, GPU infrastructure, or experiment reports
   here.
-- The supported AI operators are `ai_filter`, `ai_join`, and `ai_classify`.
+- The supported AI operators are `ai_filter`, `ai_join`, `ai_classify`, and
+  field-name-only `ai_extract`. Extraction has an opt-in synthetic sample
+  suite with hand-authored references; keep it separate from published data.
   Do not add maps, speculation, or forking unless the task changes the
   benchmark scope.
 - Preserve query IDs, operator IDs, prompt text, corpus identities, scale
